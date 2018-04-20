@@ -34,6 +34,7 @@ class MLP(chainer.Chain):
         h3 = self.l3(h2)
         return [h1, h2, h3]
 
+
 class LRE_Updator(training.StandardUpdater):
 
     def update_core(self):
@@ -47,11 +48,9 @@ class LRE_Updator(training.StandardUpdater):
 
         opt_model = self._optimizers['main']
         model = opt_model.target
-        model_tmp = copy.deepcopy(model)
 
-        lr = 1e-3
-        opt_model_tmp = chainer.optimizers.SGD(lr=lr)
-        opt_model_tmp.setup(model_tmp)
+        opt_model_tmp = copy.deepcopy(opt_model)
+        model_tmp = opt_model_tmp.target
 
         weight = L.Linear(batchsize, 1, nobias=True, initialW=1/batchsize)
         weight.to_gpu()
@@ -64,8 +63,11 @@ class LRE_Updator(training.StandardUpdater):
 
         ys_val = model_tmp.predictor.forward(x_val)
         loss_g = F.softmax_cross_entropy(ys_val[-1], t_val)
+        model_tmp.cleargrads()
         loss_g.backward(retain_grad=True)
 
+        # Eq 12 in https://arxiv.org/abs/1803.09050
+        # TODO(yasunorikudo): Faster implementation.
         w = model.xp.zeros(batchsize, dtype=np.float32)
         for i in range(batchsize):
             w[i] += ((x_val * x[i]).sum(axis=1) * (ys_val[0].grad * ys[0].grad[i]).sum(axis=1)).sum()
@@ -75,10 +77,6 @@ class LRE_Updator(training.StandardUpdater):
         if w.sum() != 0:
             w /= w.sum()
         weight.W.data[:] = w[None]
-        # if self.iteration % 100 == 0:
-        #     for w_, t_ in zip(w, t):
-        #         if int(t_) == 4:
-        #             print('{0:>6d} {1:.5f} {2}'.format(self.iteration, float(w_), int(t_)))
 
         y = model.predictor(x)
         loss_f2 = F.sum(weight(F.softmax_cross_entropy(y, t, reduce='no')[None]))
@@ -111,7 +109,6 @@ class ClassWeightUpdator(training.StandardUpdater):
         optimizer.update()
 
         chainer.report({'loss': loss, 'accuracy': F.accuracy(y, t)}, model)
-
 
 
 def get_imbalanced_mnist(n_train_images={4: 50, 9: 4950},
@@ -186,8 +183,7 @@ def main():
         model.to_gpu()  # Copy the model to the GPU
 
     # Setup an optimizer
-    optimizer = chainer.optimizers.NesterovAG(lr=1e-2)
-    optimizer.setup(model)
+    optimizer = chainer.optimizers.NesterovAG(lr=1e-2).setup(model)
 
     # Load the MNIST dataset
     train, val, test = get_imbalanced_mnist(seed=args.seed)
